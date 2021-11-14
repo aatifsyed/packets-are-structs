@@ -6,6 +6,9 @@ use std::{
     ptr::{addr_of, addr_of_mut, read_unaligned, write_unaligned},
 };
 
+#[cfg(test)]
+use std::path::Path;
+
 pub trait Ratify {
     fn ratify(&mut self) {}
 }
@@ -83,6 +86,22 @@ impl<Payload: Sized + Copy, const NUM_TAGS: usize> Ethernet<Payload, NUM_TAGS> {
     pub fn set_eth_body(&mut self, eth_body: Payload) {
         let eth_body = ManuallyDrop::new(eth_body);
         unsafe { write_unaligned(addr_of_mut!(self.eth_body), eth_body) }
+    }
+}
+
+impl<Payload: ?Sized, const NUM_TAGS: usize> Ethernet<Payload, NUM_TAGS> {
+    #[cfg(test)]
+    pub fn dump(&self, filename: impl AsRef<Path>) -> anyhow::Result<()> {
+        use as_bytes::AsBytes;
+        use pcap_file::PcapWriter;
+        use std::fs::File;
+
+        let file = File::create(filename)?;
+        let mut pcap_writer = PcapWriter::new(file)?;
+
+        let data = unsafe { self.as_bytes() };
+        pcap_writer.write(0, 0, data, data.len().try_into()?)?;
+        Ok(())
     }
 }
 
@@ -263,10 +282,6 @@ fn wrapping_sum(b: &[u16]) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use as_bytes::AsBytes as _;
-    use pcap_file::PcapWriter;
-    use std::fs::File;
-
     use super::*;
     #[test]
     fn create_pcap() -> anyhow::Result<()> {
@@ -303,10 +318,7 @@ mod tests {
             ),
         );
         packet.ratify();
-
-        let bytes = unsafe { packet.as_bytes() };
-        PcapWriter::new(File::create("test.pcap")?)?.write(0, 0, bytes, bytes.len().try_into()?)?;
-
+        packet.dump("test.pcap")?;
         Ok(())
     }
 }
