@@ -1,6 +1,6 @@
-use as_bytes::AsBytes as _;
 use macaddr::MacAddr6;
 use std::{
+    fmt::{self, Debug},
     mem::{size_of, ManuallyDrop},
     net::Ipv4Addr,
     ptr::{addr_of, addr_of_mut, read_unaligned, write_unaligned},
@@ -32,11 +32,30 @@ pub struct EthernetHeader<const NUM_TAGS: usize> {
     pub ethertype_or_length: EthertypeOrLength,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Copy)]
 #[repr(packed)]
 pub struct Ethernet<Payload: ?Sized, const NUM_TAGS: usize> {
     pub eth_hdr: EthernetHeader<NUM_TAGS>,
     pub eth_body: ManuallyDrop<Payload>,
+}
+impl<Payload: Sized + Debug + Copy, const NUM_TAGS: usize> Debug for Ethernet<Payload, NUM_TAGS> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let eth_hdr = unsafe { read_unaligned(addr_of!(self.eth_hdr)) };
+        let eth_body = unsafe { read_unaligned(addr_of!(self.eth_body)) };
+        let eth_body = ManuallyDrop::into_inner(eth_body);
+        f.debug_struct("Ethernet")
+            .field("eth_hdr", &eth_hdr)
+            .field("eth_body", &eth_body)
+            .finish()
+    }
+}
+
+impl<Payload: Sized + Copy, const NUM_TAGS: usize> Clone for Ethernet<Payload, NUM_TAGS> {
+    fn clone(&self) -> Self {
+        let eth_hdr = unsafe { read_unaligned(addr_of!(self.eth_hdr)) };
+        let eth_body = unsafe { read_unaligned(addr_of!(self.eth_body)) };
+        Self { eth_hdr, eth_body }
+    }
 }
 
 impl<Payload: Sized + Ratify + Copy, const NUM_TAGS: usize> Ratify for Ethernet<Payload, NUM_TAGS> {
@@ -87,11 +106,36 @@ pub struct Ipv4Header<const NUM_OPTIONS: usize> {
     pub options: [Ipv4Option; NUM_OPTIONS],
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Copy)]
 #[repr(packed)]
 pub struct Ipv4<Payload: ?Sized, const NUM_OPTIONS: usize> {
     pub ipv4_hdr: Ipv4Header<NUM_OPTIONS>,
     pub ipv4_body: ManuallyDrop<Payload>,
+}
+
+impl<Payload: ?Sized + Debug + Copy, const NUM_OPTIONS: usize> Debug
+    for Ipv4<Payload, NUM_OPTIONS>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ipv4_hdr = unsafe { read_unaligned(addr_of!(self.ipv4_hdr)) };
+        let ipv4_body = unsafe { read_unaligned(addr_of!(self.ipv4_body)) };
+        let ipv4_body = ManuallyDrop::into_inner(ipv4_body);
+        f.debug_struct("Ipv4")
+            .field("ipv4_hdr", &ipv4_hdr)
+            .field("ipv4_body", &ipv4_body)
+            .finish()
+    }
+}
+
+impl<Payload: ?Sized + Copy, const NUM_OPTIONS: usize> Clone for Ipv4<Payload, NUM_OPTIONS> {
+    fn clone(&self) -> Self {
+        let ipv4_hdr = unsafe { read_unaligned(addr_of!(self.ipv4_hdr)) };
+        let ipv4_body = unsafe { read_unaligned(addr_of!(self.ipv4_body)) };
+        Self {
+            ipv4_hdr,
+            ipv4_body,
+        }
+    }
 }
 
 impl<Payload: Sized + Ratify + Copy, const NUM_OPTIONS: usize> Ratify
@@ -146,11 +190,30 @@ pub struct UDPHeader {
     pub checksum: u16,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Copy)]
 #[repr(packed)]
 pub struct UDP<Payload: ?Sized> {
     pub udp_hdr: UDPHeader,
     pub udp_body: ManuallyDrop<Payload>,
+}
+
+impl<Payload: ?Sized + Debug + Copy> Debug for UDP<Payload> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let udp_hdr = unsafe { read_unaligned(addr_of!(self.udp_hdr)) };
+        let udp_body = unsafe { read_unaligned(addr_of!(self.udp_body)) };
+        let udp_body = ManuallyDrop::into_inner(udp_body);
+        f.debug_struct("UDP")
+            .field("udp_hdr", &udp_hdr)
+            .field("udp_body", &udp_body)
+            .finish()
+    }
+}
+impl<Payload: ?Sized + Copy> Clone for UDP<Payload> {
+    fn clone(&self) -> Self {
+        let udp_hdr = unsafe { read_unaligned(addr_of!(self.udp_hdr)) };
+        let udp_body = unsafe { read_unaligned(addr_of!(self.udp_body)) };
+        Self { udp_hdr, udp_body }
+    }
 }
 
 impl<Payload: Sized + Copy + Ratify> Ratify for UDP<Payload> {
@@ -200,9 +263,9 @@ fn wrapping_sum(b: &[u16]) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
-
+    use as_bytes::AsBytes as _;
     use pcap_file::PcapWriter;
+    use std::fs::File;
 
     use super::*;
     #[test]
