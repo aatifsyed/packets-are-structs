@@ -1,3 +1,6 @@
+use as_bytes::AsBytes;
+use byteorder::{BigEndian, ByteOrder};
+use internet_checksum::Checksum;
 use macaddr::MacAddr6;
 use std::{
     fmt::{self, Debug},
@@ -92,7 +95,6 @@ impl<Payload: Sized + Copy, const NUM_TAGS: usize> Ethernet<Payload, NUM_TAGS> {
 impl<Payload: ?Sized, const NUM_TAGS: usize> Ethernet<Payload, NUM_TAGS> {
     #[cfg(test)]
     pub fn dump(&self, filename: impl AsRef<Path>) -> anyhow::Result<()> {
-        use as_bytes::AsBytes;
         use pcap_file::PcapWriter;
         use std::fs::File;
 
@@ -161,22 +163,17 @@ impl<Payload: Sized + Ratify + Copy, const NUM_OPTIONS: usize> Ratify
     for Ipv4<Payload, NUM_OPTIONS>
 {
     fn ratify(&mut self) {
-        let len: u16 = size_of::<Self>().try_into().unwrap();
-        self.ipv4_hdr.total_length = len.to_be();
+        let total_length: u16 = size_of::<Self>().try_into().unwrap();
+        self.ipv4_hdr.total_length = total_length.to_be();
         self.ipv4_hdr.header_checksum = 0;
 
         let mut body = self.ipv4_body();
         body.ratify();
         self.set_ipv4_body(body);
 
-        let words: &[u16] = unsafe {
-            std::slice::from_raw_parts(
-                addr_of!(self.ipv4_hdr) as _,
-                size_of::<Ipv4Header<NUM_OPTIONS>>() / 2,
-            )
-        };
-
-        self.ipv4_hdr.header_checksum = !wrapping_sum(words);
+        let mut checksum = Checksum::new();
+        checksum.add_bytes(unsafe { self.as_bytes_mut() });
+        self.ipv4_hdr.header_checksum = BigEndian::read_u16(&checksum.checksum());
     }
 }
 
@@ -268,15 +265,120 @@ impl<Payload: Sized + Copy> UDP<Payload> {
     }
 }
 
-fn wrapping_sum(b: &[u16]) -> u16 {
-    let sum = b.into_iter().fold(0u32, |acc, el| acc + *el as u32);
-    let intermediate = unsafe { std::mem::transmute::<_, [u16; 2]>(sum) };
-    if cfg!(target_endian = "big") {
-        let [carry, sum] = intermediate;
-        sum + carry
-    } else {
-        let [sum, carry] = intermediate;
-        sum + carry
+#[derive(Debug, Clone, Copy)]
+#[repr(packed)]
+pub struct ICMPHeader {
+    pub ty: u8,
+    pub code: u8,
+    pub checksum: u16,
+}
+
+#[derive(Copy)]
+#[repr(packed)]
+pub struct ICMP<Payload: ?Sized> {
+    pub icmp_hdr: ICMPHeader,
+    pub icmp_body: ManuallyDrop<Payload>,
+}
+
+impl<Payload: ?Sized + Debug + Copy> Debug for ICMP<Payload> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let icmp_hdr = unsafe { read_unaligned(addr_of!(self.icmp_hdr)) };
+        let icmp_body = unsafe { read_unaligned(addr_of!(self.icmp_body)) };
+        let icmp_body = ManuallyDrop::into_inner(icmp_body);
+        f.debug_struct("ICMP")
+            .field("icmp_hdr", &icmp_hdr)
+            .field("icmp_body", &icmp_body)
+            .finish()
+    }
+}
+impl<Payload: ?Sized + Copy> Clone for ICMP<Payload> {
+    fn clone(&self) -> Self {
+        let icmp_hdr = unsafe { read_unaligned(addr_of!(self.icmp_hdr)) };
+        let icmp_body = unsafe { read_unaligned(addr_of!(self.icmp_body)) };
+        Self {
+            icmp_hdr,
+            icmp_body,
+        }
+    }
+}
+
+impl<Payload: Sized + Copy + Ratify> Ratify for ICMP<Payload> {
+    fn ratify(&mut self) {
+        let mut body = self.icmp_body();
+        body.ratify();
+        self.set_icmp_body(body);
+
+        self.icmp_hdr.checksum = 0;
+
+        let mut checksum = Checksum::new();
+        checksum.add_bytes(unsafe { self.as_bytes_mut() });
+        self.icmp_hdr.checksum = BigEndian::read_u16(&checksum.checksum());
+    }
+}
+
+impl<Payload: Sized> ICMP<Payload> {
+    pub fn new(icmp_hdr: ICMPHeader, icmp_body: Payload) -> Self {
+        Self {
+            icmp_hdr,
+            icmp_body: ManuallyDrop::new(icmp_body),
+        }
+    }
+}
+
+impl<Payload: Sized> ICMP<Payload> {
+    pub fn icmp_body(&self) -> Payload {
+        let b = unsafe { read_unaligned(addr_of!(self.icmp_body)) };
+        ManuallyDrop::into_inner(b)
+    }
+    pub fn set_icmp_body(&mut self, icmp_body: Payload) {
+        let icmp_body = ManuallyDrop::new(icmp_body);
+        unsafe { write_unaligned(addr_of_mut!(self.icmp_body), icmp_body) }
+    }
+}
+
+#[derive(Copy)]
+#[repr(packed)]
+pub struct ICMPEcho<Payload: ?Sized> {
+    identifier: u16,
+    sequence_number: u16,
+    icmp_echo_body: ManuallyDrop<Payload>,
+}
+
+impl<Payload: ?Sized + Debug + Copy> Debug for ICMPEcho<Payload> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let identifier = unsafe { read_unaligned(addr_of!(self.identifier)) };
+        let sequence_number = unsafe { read_unaligned(addr_of!(self.sequence_number)) };
+        let icmp_echo_body = unsafe { read_unaligned(addr_of!(self.icmp_echo_body)) };
+        let icmp_echo_body = ManuallyDrop::into_inner(icmp_echo_body);
+        f.debug_struct("ICMPEcho")
+            .field("identifer", &identifier)
+            .field("sequence_number", &sequence_number)
+            .field("icmp_echo_body", &icmp_echo_body)
+            .finish()
+    }
+}
+impl<Payload: ?Sized + Copy> Clone for ICMPEcho<Payload> {
+    fn clone(&self) -> Self {
+        let identifier = unsafe { read_unaligned(addr_of!(self.identifier)) };
+        let sequence_number = unsafe { read_unaligned(addr_of!(self.sequence_number)) };
+        let icmp_echo_body = unsafe { read_unaligned(addr_of!(self.icmp_echo_body)) };
+        Self {
+            identifier,
+            sequence_number,
+            icmp_echo_body,
+        }
+    }
+}
+
+impl<Payload: Sized + Copy + Ratify> Ratify for ICMPEcho<Payload> {}
+
+impl<Payload: Sized> ICMPEcho<Payload> {
+    pub fn new(identifier: u16, sequence_number: u16, icmp_echo_body: Payload) -> Self {
+        Self {
+            identifier,
+            sequence_number,
+            icmp_echo_body: ManuallyDrop::new(icmp_echo_body),
+        }
     }
 }
 
@@ -284,7 +386,7 @@ fn wrapping_sum(b: &[u16]) -> u16 {
 mod tests {
     use super::*;
     #[test]
-    fn create_pcap() -> anyhow::Result<()> {
+    fn create_ipv4_udp_pcap() -> anyhow::Result<()> {
         let mut packet = Ethernet::new(
             EthernetHeader {
                 destination: MacAddr6::broadcast(),
@@ -318,7 +420,46 @@ mod tests {
             ),
         );
         packet.ratify();
-        packet.dump("test.pcap")?;
+        packet.dump("ipv4_udp.pcap")?;
         Ok(())
+    }
+
+    #[test]
+    fn create_ipv4_icmp_packet() {
+        let mut packet = Ethernet::new(
+            EthernetHeader {
+                destination: MacAddr6::broadcast(),
+                source: MacAddr6::new(0, 1, 2, 3, 4, 5),
+                vlan: [],
+                ethertype_or_length: EthertypeOrLength(0x0008),
+            },
+            Ipv4::new(
+                Ipv4Header {
+                    version_ihl: 0b0100_0101,
+                    dscp_ecn: 0,
+                    total_length: 0,
+                    identification: 0,
+                    flags_fragment_offset: 0,
+                    ttl: 100,
+                    protocol: 0x01,
+                    header_checksum: 0,
+                    source: Ipv4Addr::LOCALHOST,
+                    destination: Ipv4Addr::BROADCAST,
+                    options: [],
+                },
+                ICMP::new(
+                    ICMPHeader {
+                        ty: 0b0000_1000,
+                        code: 0,
+                        checksum: 0,
+                    },
+                    ICMPEcho::new(1, 1, *b"hello"),
+                ),
+            ),
+        );
+        packet.ratify();
+        println!("packet = {:?}", packet);
+        println!("{:?}", unsafe { packet.as_bytes() });
+        packet.dump("ipv4_icmp.pcap").unwrap();
     }
 }
