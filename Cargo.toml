@@ -16,4 +16,5 @@ packed_struct = "0.10.0"
 
 [dev-dependencies]
 anyhow = "1.0.45"
+etherparse = "0.10.1"
 pcap-file = "1.1.1"

@@ -56,6 +56,23 @@ impl<Payload: Sized + Debug + Copy, const NUM_TAGS: usize> Debug for Ethernet<Pa
     }
 }
 
+impl<Payload, const NUM_TAGS: usize> fmt::LowerHex for Ethernet<Payload, NUM_TAGS> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in unsafe { self.as_bytes() } {
+            write!(f, "{:02x}", byte)?
+        }
+        Ok(())
+    }
+}
+impl<Payload, const NUM_TAGS: usize> fmt::UpperHex for Ethernet<Payload, NUM_TAGS> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in unsafe { self.as_bytes() } {
+            write!(f, "{:02X}", byte)?
+        }
+        Ok(())
+    }
+}
+
 impl<Payload: Sized + Copy, const NUM_TAGS: usize> Clone for Ethernet<Payload, NUM_TAGS> {
     fn clone(&self) -> Self {
         let eth_hdr = unsafe { read_unaligned(addr_of!(self.eth_hdr)) };
@@ -384,10 +401,13 @@ impl<Payload: Sized> ICMPEcho<Payload> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
+    use etherparse::PacketBuilder;
+
     #[test]
     fn create_ipv4_udp_pcap() -> anyhow::Result<()> {
-        let mut packet = Ethernet::new(
+        let mut actual = Ethernet::new(
             EthernetHeader {
                 destination: MacAddr6::broadcast(),
                 source: MacAddr6::new(0, 1, 2, 3, 4, 5),
@@ -400,7 +420,7 @@ mod tests {
                     dscp_ecn: 0,
                     total_length: 0,
                     identification: 0,
-                    flags_fragment_offset: 0,
+                    flags_fragment_offset: 0b0100_0000_0000_0000, // Don't fragment
                     ttl: 100,
                     protocol: 0x11,
                     header_checksum: 0,
@@ -419,8 +439,39 @@ mod tests {
                 ),
             ),
         );
-        packet.ratify();
-        packet.dump("ipv4_udp.pcap")?;
+        actual.ratify();
+        println!("packet = {:?}", actual);
+        println!("{:x}", actual);
+        actual.dump("ipv4_udp.pcap")?;
+
+        let expected = PacketBuilder::ethernet2(
+            MacAddr6::new(0, 1, 2, 3, 4, 5).into_array(),
+            MacAddr6::broadcast().into_array(),
+        )
+        .ipv4(
+            Ipv4Addr::LOCALHOST.octets(),
+            Ipv4Addr::BROADCAST.octets(),
+            100,
+        )
+        .udp(5060, 0);
+        let payload = *b"hello, my name is Aatif";
+        let mut buffer = Vec::new();
+        expected.write(&mut buffer, &payload)?;
+
+        for (position, (expected, actual)) in
+            buffer.iter().zip(unsafe { actual.as_bytes() }).enumerate()
+        {
+            println!(
+                "{position:04}: {actual:02x?} ={symbol} {expected:02x?} {actual:08b} ={symbol} {expected:08b}",
+                position = position,
+                expected = expected,
+                actual = actual,
+                symbol = match expected == actual {
+                    true => '=',
+                    false => '!',
+                }
+            )
+        }
         Ok(())
     }
 
@@ -459,7 +510,7 @@ mod tests {
         );
         packet.ratify();
         println!("packet = {:?}", packet);
-        println!("{:?}", unsafe { packet.as_bytes() });
+        println!("{:x}", packet);
         packet.dump("ipv4_icmp.pcap").unwrap();
     }
 }
