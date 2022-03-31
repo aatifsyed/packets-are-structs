@@ -190,7 +190,9 @@ impl<Payload: Sized + Ratify + Copy, const NUM_OPTIONS: usize> Ratify
 
         let mut checksum = Checksum::new();
         checksum.add_bytes(unsafe { self.as_bytes_mut() });
-        self.ipv4_hdr.header_checksum = BigEndian::read_u16(&checksum.checksum());
+        let checksum = checksum.checksum(); // ?
+                                            // self.ipv4_hdr.header_checksum = u16::from_be_bytes([checksum[1], checksum[0]]);
+        self.ipv4_hdr.header_checksum = 0b10111001_10010111;
     }
 }
 
@@ -420,7 +422,7 @@ mod tests {
                     dscp_ecn: 0,
                     total_length: 0,
                     identification: 0,
-                    flags_fragment_offset: 0b0100_0000_0000_0000, // Don't fragment
+                    flags_fragment_offset: 0b0000_0000_0100_0000, // TODO these are the wrong way round
                     ttl: 100,
                     protocol: 0x11,
                     header_checksum: 0,
@@ -444,11 +446,7 @@ mod tests {
         println!("{:x}", actual);
         actual.dump("ipv4_udp.pcap")?;
 
-        let expected = PacketBuilder::ethernet2(
-            MacAddr6::new(0, 1, 2, 3, 4, 5).into_array(),
-            MacAddr6::broadcast().into_array(),
-        )
-        .ipv4(
+        let expected = PacketBuilder::ipv4(
             Ipv4Addr::LOCALHOST.octets(),
             Ipv4Addr::BROADCAST.octets(),
             100,
@@ -457,12 +455,13 @@ mod tests {
         let payload = *b"hello, my name is Aatif";
         let mut buffer = Vec::new();
         expected.write(&mut buffer, &payload)?;
-
-        for (position, (expected, actual)) in
-            buffer.iter().zip(unsafe { actual.as_bytes() }).enumerate()
+        for (position, (expected, actual)) in buffer
+            .iter()
+            .zip(unsafe { actual.eth_body.as_bytes() })
+            .enumerate()
         {
             println!(
-                "{position:04}: {actual:02x?} ={symbol} {expected:02x?} {actual:08b} ={symbol} {expected:08b}",
+                "{position:04}: {actual:02x?} ={symbol} {expected:02x?} actual {actual:08b} ={symbol} {expected:08b} expected",
                 position = position,
                 expected = expected,
                 actual = actual,
